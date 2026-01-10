@@ -33,6 +33,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "사용 가능한 명령어:\n"
         "/start - 환영 메시지 표시\n"
         "/help - 도움말 표시\n"
+        "/list - 최근 저장된 메시지 목록 보기\n"
         "/status - 현재 설정 상태 확인\n\n"
         "사용법: ! 메시지 내용\n"
         "예시: ! 오늘 회의 내용 정리하기"
@@ -54,6 +55,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "명령어:\n"
         "/start - 시작하기\n"
         "/help - 이 도움말 표시\n"
+        "/list - 최근 저장된 메시지 10개 조회\n"
         "/status - 현재 상태 확인"
     )
     await update.message.reply_text(help_text)
@@ -73,6 +75,57 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text = f"❌ 연결 오류:\n{str(e)}"
 
     await update.message.reply_text(status_text)
+
+
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """최근 저장된 메시지 목록 조회"""
+    try:
+        # 노션 데이터베이스에서 최근 10개 항목 조회
+        results = notion.databases.query(
+            database_id=NOTION_DATABASE_ID,
+            sorts=[
+                {
+                    "property": "날짜",
+                    "direction": "descending"
+                }
+            ],
+            page_size=10
+        )
+
+        if not results.get('results'):
+            await update.message.reply_text("📭 저장된 메시지가 없습니다.\n\n! 메시지를 보내서 노션에 저장해보세요!")
+            return
+
+        # 메시지 목록 생성
+        message_list = "📋 최근 저장된 메시지 (최대 10개):\n\n"
+
+        for idx, page in enumerate(results['results'], 1):
+            properties = page['properties']
+
+            # 제목 추출
+            title_property = properties.get('제목', {})
+            title = ""
+            if title_property.get('title'):
+                title = title_property['title'][0]['text']['content']
+
+            # 날짜 추출
+            date_property = properties.get('날짜', {})
+            date_str = ""
+            if date_property.get('date') and date_property['date'].get('start'):
+                date_iso = date_property['date']['start']
+                # ISO 형식을 읽기 쉬운 형식으로 변환
+                date_obj = datetime.fromisoformat(date_iso.replace('Z', '+00:00'))
+                date_str = date_obj.strftime('%m/%d %H:%M')
+
+            message_list += f"{idx}. {title}\n   📅 {date_str}\n\n"
+
+        message_list += "💡 /help 명령어로 더 많은 기능을 확인하세요!"
+
+        await update.message.reply_text(message_list)
+
+    except Exception as e:
+        logger.error(f"목록 조회 오류: {e}")
+        await update.message.reply_text(f"❌ 목록 조회 중 오류가 발생했습니다:\n{str(e)}")
 
 
 async def save_to_notion(message_data: dict):
@@ -171,6 +224,7 @@ def main():
     # 명령어 핸들러 등록
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("status", status_command))
 
     # 메시지 핸들러 등록
