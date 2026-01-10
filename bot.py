@@ -29,12 +29,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """봇 시작 명령어 처리"""
     welcome_message = (
         "텔레그램-노션 봇에 오신 것을 환영합니다!\n\n"
-        "이 봇은 텔레그램 메시지를 자동으로 노션 데이터베이스에 저장합니다.\n\n"
+        "이 봇은 ! 로 시작하는 메시지를 노션 데이터베이스에 저장합니다.\n\n"
         "사용 가능한 명령어:\n"
         "/start - 환영 메시지 표시\n"
         "/help - 도움말 표시\n"
         "/status - 현재 설정 상태 확인\n\n"
-        "메시지를 보내주시면 자동으로 노션에 저장됩니다!"
+        "사용법: ! 메시지 내용\n"
+        "예시: ! 오늘 회의 내용 정리하기"
     )
     await update.message.reply_text(welcome_message)
 
@@ -43,9 +44,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """도움말 명령어 처리"""
     help_text = (
         "사용 방법:\n\n"
-        "1. 일반 메시지를 보내면 노션에 저장됩니다.\n"
+        "1. ! 로 시작하는 메시지만 노션에 저장됩니다.\n"
         "2. 메시지는 제목, 내용, 날짜와 함께 저장됩니다.\n"
         "3. 메시지 발신자 정보도 함께 기록됩니다.\n\n"
+        "예시:\n"
+        "! 오늘 할 일 정리\n"
+        "! 프로젝트 아이디어: AI 챗봇 개발\n"
+        "! 회의록: 2026년 1월 10일\n\n"
         "명령어:\n"
         "/start - 시작하기\n"
         "/help - 이 도움말 표시\n"
@@ -123,12 +128,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message.text
 
+    # ! 로 시작하는 메시지만 처리
+    if not message.startswith('!'):
+        return
+
+    # ! 를 제거한 실제 메시지 내용
+    actual_message = message[1:].strip()
+
+    # 메시지가 비어있으면 무시
+    if not actual_message:
+        await update.message.reply_text("❌ ! 뒤에 저장할 내용을 입력해주세요.\n예: ! 오늘 할 일 정리")
+        return
+
     # 메시지가 너무 길면 제목을 축약
-    title = message[:50] + "..." if len(message) > 50 else message
+    title = actual_message[:50] + "..." if len(actual_message) > 50 else actual_message
 
     message_data = {
         'title': title,
-        'content': message,
+        'content': actual_message,
         'sender': f"{user.first_name} {user.last_name or ''}".strip() + f" (@{user.username})" if user.username else "",
         'date': datetime.now().isoformat()
     }
