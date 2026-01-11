@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 NOTION_API_KEY = os.getenv('NOTION_API_KEY')
 NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
+MONTHLY_DB_ID = os.getenv('MONTHLY_DB_ID')
 
 # Notion 클라이언트 초기화
 notion = Client(auth=NOTION_API_KEY)
@@ -80,7 +81,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - 환영 메시지 표시\n"
         "/help - 도움말 표시\n"
         "/list - 최근 저장된 항목 목록 보기\n"
-        "/status - 현재 설정 상태 확인\n\n"
+        "/status - 현재 설정 상태 확인\n"
+        "/월별통계 [YYYY-MM] - 월별 지출/수입 통계 보기\n\n"
         "사용법: ! [내용] [금액] [종류] [카테고리] [날짜(선택)]\n\n"
         "예시:\n"
         "! 커피 4500 지출 교통비\n"
@@ -119,7 +121,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - 시작하기\n"
         "/help - 이 도움말 표시\n"
         "/list - 최근 저장된 항목 10개 조회\n"
-        "/status - 현재 상태 확인"
+        "/status - 현재 상태 확인\n"
+        "/월별통계 [YYYY-MM] - 월별 지출/수입 통계 조회\n"
+        "   예: /월별통계 2026-01"
     )
     await update.message.reply_text(help_text)
 
@@ -211,6 +215,148 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"목록 조회 오류: {e}")
         await update.message.reply_text(f"❌ 목록 조회 중 오류가 발생했습니다:\n{str(e)}")
+
+
+async def monthly_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """월별 통계 명령어 처리: /월별통계 [YYYY-MM]"""
+    try:
+        # 인자 파싱
+        if not context.args or len(context.args) < 1:
+            # 인자가 없으면 이번 달
+            year_month = datetime.now().strftime('%Y-%m')
+        else:
+            year_month = context.args[0]
+
+        # YYYY-MM 형식 검증
+        if len(year_month) != 7 or year_month[4] != '-':
+            await update.message.reply_text(
+                "❌ 잘못된 형식입니다.\n\n"
+                "사용법: /월별통계 [YYYY-MM]\n"
+                "예시: /월별통계 2026-01"
+            )
+            return
+
+        await update.message.reply_text(f"📊 {year_month} 통계를 조회하는 중...")
+
+        # 데이터베이스 속성 가져오기
+        db_props = get_db_properties()
+        if not db_props:
+            await update.message.reply_text("❌ 데이터베이스 속성을 가져올 수 없습니다.")
+            return
+
+        props = db_props['props']
+
+        # 해당 월의 거래 내역 조회 (날짜 필터)
+        year, month = year_month.split('-')
+        start_date = f"{year}-{month}-01"
+
+        # 다음 달 계산
+        if month == '12':
+            next_month = f"{int(year)+1}-01-01"
+        else:
+            next_month = f"{year}-{int(month)+1:02d}-01"
+
+        # 날짜 필터로 조회
+        filter_query = {
+            "and": [
+                {
+                    "property": props.get('date', '날짜'),
+                    "date": {
+                        "on_or_after": start_date
+                    }
+                },
+                {
+                    "property": props.get('date', '날짜'),
+                    "date": {
+                        "before": next_month
+                    }
+                }
+            ]
+        }
+
+        results = notion.databases.query(
+            database_id=NOTION_DATABASE_ID,
+            filter=filter_query
+        )
+
+        # 통계 계산
+        total_income = 0
+        total_expense = 0
+        income_by_category = {}
+        expense_by_category = {}
+        transaction_count = len(results['results'])
+
+        for page in results['results']:
+            properties = page['properties']
+
+            # 종류 확인 (지출/수입)
+            type_prop = properties.get(props.get('type', '종류'), {})
+            trans_type = None
+            if type_prop.get('select'):
+                trans_type = type_prop['select'].get('name')
+
+            # 금액 추출
+            if trans_type == '지출':
+                expense_prop = properties.get(props.get('expense_amount', '지출 비용'), {})
+                if expense_prop.get('number') is not None:
+                    amount = expense_prop['number']
+                    total_expense += amount
+
+                    # 카테고리별 집계
+                    category_prop = properties.get(props.get('expense_category', '지출 종류'), {})
+                    if category_prop.get('select'):
+                        category = category_prop['select'].get('name', '기타')
+                        expense_by_category[category] = expense_by_category.get(category, 0) + amount
+
+            elif trans_type == '수입':
+                income_prop = properties.get(props.get('income_amount', '수입 비용'), {})
+                if income_prop.get('number') is not None:
+                    amount = income_prop['number']
+                    total_income += amount
+
+                    # 카테고리별 집계
+                    category_prop = properties.get(props.get('income_category', '수입 종류'), {})
+                    if category_prop.get('select'):
+                        category = category_prop['select'].get('name', '기타')
+                        income_by_category[category] = income_by_category.get(category, 0) + amount
+
+        # 결과 메시지 생성
+        balance = total_income - total_expense
+
+        message = f"📊 {year_month} 월별 통계\n"
+        message += "=" * 30 + "\n\n"
+
+        message += f"💰 총 수입: {total_income:,}원\n"
+        message += f"💸 총 지출: {total_expense:,}원\n"
+        message += f"📈 순자산 변화: {balance:+,}원\n"
+        message += f"📝 거래 건수: {transaction_count}건\n\n"
+
+        # 수입 카테고리별
+        if income_by_category:
+            message += "💵 수입 내역:\n"
+            for category, amount in sorted(income_by_category.items(), key=lambda x: -x[1]):
+                percentage = (amount / total_income * 100) if total_income > 0 else 0
+                message += f"  • {category}: {amount:,}원 ({percentage:.1f}%)\n"
+            message += "\n"
+
+        # 지출 카테고리별
+        if expense_by_category:
+            message += "💳 지출 내역:\n"
+            for category, amount in sorted(expense_by_category.items(), key=lambda x: -x[1]):
+                percentage = (amount / total_expense * 100) if total_expense > 0 else 0
+                message += f"  • {category}: {amount:,}원 ({percentage:.1f}%)\n"
+            message += "\n"
+
+        if transaction_count == 0:
+            message += "\n📭 해당 월에 거래 내역이 없습니다."
+
+        await update.message.reply_text(message)
+
+    except Exception as e:
+        logger.error(f"월별 통계 조회 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        await update.message.reply_text(f"❌ 통계 조회 중 오류가 발생했습니다:\n{str(e)}")
 
 
 def parse_date(date_str):
@@ -422,6 +568,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("월별통계", monthly_stats_command))
 
     # 메시지 핸들러 등록
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

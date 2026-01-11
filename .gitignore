@@ -16,3 +16,7 @@ ENV/
 .idea/
 *.swp
 *.swo
+
+# Test files and outputs
+props.json
+nul
